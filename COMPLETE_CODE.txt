@@ -1,0 +1,539 @@
+=================================================================
+PowerPoint VBAアドイン - スライド選択
+完全統合版（VBAエディタに直接コピー可能）
+2026-02-03 更新版
+=================================================================
+
+【実装内容】
+・スライド一覧をダイアログで表示
+・選択したスライドにジャンプ
+・ダブルクリックでジャンプ
+・リストボックスのマウスホイールスクロール対応
+・スライド番号のバリデーション機能
+
+【実装手順（VBAエディタ）】
+
+1. PowerPointを開く（*.pptm形式）
+2. Alt + F11 でVBAエディタを開く
+3. 「挿入」→「モジュール」で以下2つの標準モジュールを作成
+   - ModuleSlideJumper（下記のモジュール部分）
+   - ListBoxMouseScroll（下記のホイール対応モジュール）
+4. 「挿入」→「ユーザーフォーム」で UserFormSlideSelector を作成
+5. 下記のユーザーフォームコードを貼り付け
+6. コントロールを配置（lstSlides, cmdJump, cmdCancel）
+
+=================================================================
+モジュール部分（ModuleSlideJumper）
+=================================================================
+
+Attribute VB_Name = "ModuleSlideJumper"
+
+Public Sub ShowSlideDialog()
+    '
+    ' ShowSlideDialog - スライド選択ダイアログを表示するメインサブ
+    '
+    Dim frmSlides As UserFormSlideSelector
+    
+    ' ユーザーフォームのインスタンスを作成
+    Set frmSlides = New UserFormSlideSelector
+    
+    ' ダイアログを表示（モーダル表示）
+    frmSlides.Show vbModal
+    
+    ' フォームのメモリ解放
+    Unload frmSlides
+    Set frmSlides = Nothing
+    
+End Sub
+
+Public Sub JumpToSlide(slideNumber As Integer)
+    '
+    ' JumpToSlide - 指定されたスライド番号にジャンプ
+    ' 引数: slideNumber - 対象スライドの番号（1から始まる）
+    ' スライドショー中でも通常編集画面でも実行可能
+    '
+    On Error GoTo ErrorHandler
+    
+    Dim objPresentation As Object
+    Dim max_id As Long
+    Dim validSlideNumber As Long
+    
+    ' アクティブなプレゼンテーションを取得
+    Set objPresentation = ActivePresentation
+    
+    ' 最大スライド数を取得
+    max_id = objPresentation.Slides.Count
+    
+    ' スライド番号のバリデーション
+    If Not IsNumeric(CStr(slideNumber)) Then
+        validSlideNumber = max_id
+    Else
+        validSlideNumber = slideNumber
+    End If
+    
+    If validSlideNumber > max_id Then
+        validSlideNumber = max_id
+    End If
+    If validSlideNumber < 1 Then
+        validSlideNumber = 1
+    End If
+    
+    ' スライドショー実行中かどうかを判定
+    If SlideShowWindows.Count > 0 Then
+        ActiveWindow.View.GotoSlide Index:=validSlideNumber
+    Else
+        ActiveWindow.View.GotoSlide Index:=validSlideNumber
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "スライド遷移中にエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation, "エラー"
+End Sub
+
+Public Sub StartSlideShowFromSlide(slideNumber As Integer)
+    On Error GoTo ErrorHandler
+    
+    Dim objPresentation As Object
+    Dim pptApp As Object
+    
+    Set pptApp = GetObject(, "PowerPoint.Application")
+    Set objPresentation = pptApp.ActivePresentation
+    
+    If slideNumber < 1 Or slideNumber > objPresentation.Slides.Count Then
+        MsgBox "スライド番号が無効です。", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim settings As Object
+    Set settings = objPresentation.SlideShowSettings
+    settings.ShowType = 1
+    settings.AdvanceMode = 1
+    settings.StartingSlide = slideNumber
+    settings.EndingSlide = objPresentation.Slides.Count
+    settings.Run
+    
+    Do While pptApp.SlideShowWindows.Count > 0
+        DoEvents
+    Loop
+    
+    MsgBox "スライドショーが終了しました。", vbInformation, "完了"
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "エラー: " & Err.Description, vbExclamation
+End Sub
+
+=================================================================
+ユーザーフォーム部分（UserFormSlideSelector）
+=================================================================
+
+Attribute VB_Name = "UserFormSlideSelector"
+
+【フォームデザイン】
+ListBox: lstSlides
+Button : cmdJump  （ジャンプ）
+Button : cmdCancel（キャンセル）
+
+【フォームコード】
+
+Private Sub UserForm_Initialize()
+    lstSlides.Clear
+    Dim i As Integer
+    For i = 1 To ActivePresentation.Slides.Count
+        lstSlides.AddItem "スライド " & i
+    Next i
+    
+    If lstSlides.ListCount > 0 Then
+        lstSlides.ListIndex = 0
+    End If
+End Sub
+
+Private Sub cmdJump_Click()
+    ModuleSlideJumper.JumpToSlide lstSlides.ListIndex + 1
+    Unload Me
+End Sub
+
+Private Sub cmdCancel_Click()
+    Unload Me
+End Sub
+
+Private Sub lstSlides_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    Cancel = True
+    cmdJump_Click
+End Sub
+
+Private Sub lstSlides_MouseMove( _
+             ByVal Button As Integer, ByVal Shift As Integer, _
+             ByVal x As Single, ByVal y As Single)
+     HookListBoxScroll
+End Sub
+   
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+     UnhookListBoxScroll
+End Sub
+
+=================================================================
+リストボックスのマウスホイール対応（ListBoxMouseScroll）
+=================================================================
+
+Option Explicit
+   
+Private Type POINTAPI
+     x As Long
+     y As Long
+End Type
+   
+Private Type MOUSEHOOKSTRUCT
+        pt As POINTAPI
+        mouseData As Long
+        flags As Long
+        time As Long
+        dwExtraInfo As LongPtr
+End Type
+
+#If VBA7 Then
+    Private Declare PtrSafe Function FindWindow Lib "user32" _
+                         Alias "FindWindowA" ( _
+                                 ByVal lpClassName As String, _
+                                 ByVal lpWindowName As String) As LongPtr
+
+    Private Declare PtrSafe Function GetWindowLongPtr Lib "user32.dll" _
+                         Alias "GetWindowLongPtrA" ( _
+                                 ByVal hwnd As LongPtr, _
+                                 ByVal nIndex As Long) As LongPtr
+
+    Private Declare PtrSafe Function SetWindowsHookEx Lib "user32" _
+                         Alias "SetWindowsHookExA" ( _
+                                 ByVal idHook As Long, _
+                                 ByVal lpfn As LongPtr, _
+                                 ByVal hmod As LongPtr, _
+                                 ByVal dwThreadId As Long) As LongPtr
+
+    Private Declare PtrSafe Function CallNextHookEx Lib "user32" ( _
+                                 ByVal hHook As LongPtr, _
+                                 ByVal nCode As Long, _
+                                 ByVal wParam As LongPtr, _
+                                 ByRef lParam As Any) As LongPtr
+
+    Private Declare PtrSafe Function UnhookWindowsHookEx Lib "user32" ( _
+                                 ByVal hHook As LongPtr) As Long
+
+    Private Declare PtrSafe Function PostMessage Lib "user32.dll" _
+                         Alias "PostMessageA" ( _
+                                 ByVal hwnd As LongPtr, _
+                                 ByVal wMsg As Long, _
+                                 ByVal wParam As LongPtr, _
+                                 ByVal lParam As LongPtr) As Long
+
+    Private Declare PtrSafe Function WindowFromPoint Lib "user32" ( _
+                                 ByVal xPoint As Long, _
+                                 ByVal yPoint As Long) As LongPtr
+
+    Private Declare PtrSafe Function GetCursorPos Lib "user32.dll" ( _
+                                 ByRef lpPoint As POINTAPI) As Long
+#Else
+    Private Declare Function FindWindow Lib "user32" _
+                         Alias "FindWindowA" ( _
+                                 ByVal lpClassName As String, _
+                                 ByVal lpWindowName As String) As Long
+
+    Private Declare Function GetWindowLong Lib "user32.dll" _
+                         Alias "GetWindowLongA" ( _
+                                 ByVal hwnd As Long, _
+                                 ByVal nIndex As Long) As Long
+
+    Private Declare Function SetWindowsHookEx Lib "user32" _
+                         Alias "SetWindowsHookExA" ( _
+                                 ByVal idHook As Long, _
+                                 ByVal lpfn As Long, _
+                                 ByVal hmod As Long, _
+                                 ByVal dwThreadId As Long) As Long
+
+    Private Declare Function CallNextHookEx Lib "user32" ( _
+                                 ByVal hHook As Long, _
+                                 ByVal nCode As Long, _
+                                 ByVal wParam As Long, _
+                                 ByRef lParam As Any) As Long
+
+    Private Declare Function UnhookWindowsHookEx Lib "user32" ( _
+                                 ByVal hHook As Long) As Long
+
+    Private Declare Function PostMessage Lib "user32.dll" _
+                         Alias "PostMessageA" ( _
+                                 ByVal hwnd As Long, _
+                                 ByVal wMsg As Long, _
+                                 ByVal wParam As Long, _
+                                 ByVal lParam As Long) As Long
+
+    Private Declare Function WindowFromPoint Lib "user32" ( _
+                                 ByVal xPoint As Long, _
+                                 ByVal yPoint As Long) As Long
+
+    Private Declare Function GetCursorPos Lib "user32.dll" ( _
+                                 ByRef lpPoint As POINTAPI) As Long
+#End If
+   
+Private Const WH_MOUSE_LL As Long = 14
+Private Const WM_MOUSEWHEEL As Long = &H20A
+Private Const HC_ACTION As Long = 0
+Private Const GWL_HINSTANCE As Long = (-6)
+   
+Private Const WM_KEYDOWN As Long = &H100
+Private Const WM_KEYUP As Long = &H101
+Private Const VK_UP As Long = &H26
+Private Const VK_DOWN As Long = &H28
+Private Const WM_LBUTTONDOWN As Long = &H201
+   
+Private mLngMouseHook As LongPtr
+Private mListBoxHwnd As LongPtr
+Private mbHook As Boolean
+   
+Sub HookListBoxScroll()
+Dim lngAppInst As LongPtr
+Dim hwndUnderCursor As LongPtr
+Dim tPT As POINTAPI
+        GetCursorPos tPT
+        hwndUnderCursor = WindowFromPoint(tPT.x, tPT.y)
+        If mListBoxHwnd <> hwndUnderCursor Then
+             UnhookListBoxScroll
+             mListBoxHwnd = hwndUnderCursor
+                lngAppInst = GetWindowLongPtr(mListBoxHwnd, GWL_HINSTANCE)
+                PostMessage mListBoxHwnd, WM_LBUTTONDOWN, 0, 0
+             If Not mbHook Then
+                     mLngMouseHook = SetWindowsHookEx( _
+                                                     WH_MOUSE_LL, AddressOf MouseProc, lngAppInst, 0)
+                     mbHook = mLngMouseHook <> 0
+             End If
+     End If
+End Sub
+   
+Sub UnhookListBoxScroll()
+     If mbHook Then
+             UnhookWindowsHookEx mLngMouseHook
+             mLngMouseHook = 0
+             mListBoxHwnd = 0
+             mbHook = False
+     End If
+End Sub
+   
+Private Function MouseProc( _
+             ByVal nCode As Long, ByVal wParam As LongPtr, _
+             ByRef lParam As MOUSEHOOKSTRUCT) As LongPtr
+        On Error GoTo errH
+        If (nCode = HC_ACTION) Then
+             If WindowFromPoint(lParam.pt.x, lParam.pt.y) = mListBoxHwnd Then
+                     If wParam = WM_MOUSEWHEEL Then
+                             Dim delta As Long
+                             delta = (lParam.mouseData And &HFFFF0000) \ &H10000
+                             MouseProc = True
+                             If delta > 0 Then
+                                     PostMessage mListBoxHwnd, WM_KEYDOWN, VK_UP, 0
+                                     PostMessage mListBoxHwnd, WM_KEYUP, VK_UP, 0
+                             ElseIf delta < 0 Then
+                                     PostMessage mListBoxHwnd, WM_KEYDOWN, VK_DOWN, 0
+                                     PostMessage mListBoxHwnd, WM_KEYUP, VK_DOWN, 0
+                             End If
+                             Exit Function
+                     End If
+             Else
+                     UnhookListBoxScroll
+             End If
+     End If
+        MouseProc = CallNextHookEx( _
+                             mLngMouseHook, nCode, wParam, ByVal lParam)
+     Exit Function
+errH:
+        UnhookListBoxScroll
+End Function
+
+=================================================================
+使用方法
+=================================================================
+
+1. VBAエディタで Ctrl + G でイミディエイトウィンドウを開く
+2. 以下のコマンドを入力して Enter を押す：
+   ShowSlideDialog
+
+=================================================================
+備考
+=================================================================
+
+・64bit Office では PtrSafe/LongPtr が必要です（本コードは対応済み）
+・リボンに追加する場合は customUI.xml を pptm に組み込みます
+
+==================================================================================================================================
+PowerPoint VBAアドイン - スライド選択
+完全統合版（VBAエディタに直接コピー可能）
+2026-02-02 更新版
+=================================================================
+
+【実装内容】
+・スライド一覧をダイアログで表示
+・選択したスライドにジャンプ
+・スライド番号のバリデーション機能
+・スライドショー実行中・通常編集時の両対応
+
+【実装手順】
+
+1. PowerPointを開く（*.pptm形式で保存）
+2. Alt + F11 でVBAエディタを開く
+3. 「挿入」→「モジュール」で新しいモジュールを作成
+4. 下記「モジュール部分」のすべてのコードをコピーして貼り付け
+5. 「挿入」→「ユーザーフォーム」で新しいユーザーフォームを作成
+6. フォーム名を「UserFormSlideSelector」に変更
+7. 下記「コントロール配置」を参考にコントロール（リストボックス、ボタン）を追加
+8. 下記「ユーザーフォーム部分」のコードをコピーして貼り付け
+
+=================================================================
+モジュール部分（ModuleSlideJumper）
+=================================================================
+
+Attribute VB_Name = "ModuleSlideJumper"
+
+Public Sub ShowSlideDialog()
+    '
+    ' ShowSlideDialog - スライド選択ダイアログを表示するメインサブ
+    '
+    Dim frmSlides As UserFormSlideSelector
+    
+    ' ユーザーフォームのインスタンスを作成
+    Set frmSlides = New UserFormSlideSelector
+    
+    ' ダイアログを表示（モーダル表示）
+    frmSlides.Show vbModal
+    
+    ' フォームのメモリ解放
+    Unload frmSlides
+    Set frmSlides = Nothing
+    
+End Sub
+
+Public Sub JumpToSlide(slideNumber As Integer)
+    '
+    ' JumpToSlide - 指定されたスライド番号にジャンプ
+    ' 引数: slideNumber - 対象スライドの番号（1から始まる）
+    ' スライドショー中でも通常編集画面でも実行可能
+    ' バリデーション機能付き（無効な値は自動補正）
+    '
+    On Error GoTo ErrorHandler
+    
+    Dim objPresentation As Object
+    Dim max_id As Long
+    Dim validSlideNumber As Long
+    
+    ' アクティブなプレゼンテーションを取得
+    Set objPresentation = ActivePresentation
+    
+    ' 最大スライド数を取得
+    max_id = objPresentation.Slides.Count
+    
+    ' スライド番号のバリデーション
+    ' 数値チェック - 無効な値の場合は最大スライド数に設定
+    If Not IsNumeric(CStr(slideNumber)) Then
+        validSlideNumber = max_id
+    Else
+        validSlideNumber = slideNumber
+    End If
+    
+    ' 範囲チェック - 超過時は最大値に、未満時は1に丸める
+    If validSlideNumber > max_id Then
+        validSlideNumber = max_id
+    End If
+    If validSlideNumber < 1 Then
+        validSlideNumber = 1
+    End If
+    
+    ' スライドショー実行中かどうかを判定
+    If SlideShowWindows.Count > 0 Then
+        ' スライドショー中の場合：GotoSlideで遷移
+        ActiveWindow.View.GotoSlide Index:=validSlideNumber
+    Else
+        ' 通常編集画面の場合：スライドを指定して移動
+        ActiveWindow.View.GotoSlide Index:=validSlideNumber
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "スライド遷移中にエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation, "エラー"
+End Sub
+
+'--------- ユーザーフォーム部分（UserFormSlideSelector）---------
+' 別途「挿入 → ユーザーフォーム」で作成し、以下のコードを貼り付け
+
+' フォームデザイン
+' ================================================
+' コントロール配置:
+'
+' ListBox: lstSlides (Top: 20, Left: 10, Width: 260, Height: 160)
+' Button:  cmdJump (Top: 190, Left: 10, Width: 120, Height: 25)
+'          テキスト: "ジャンプ"
+' Button:  cmdCancel (Top: 190, Left: 150, Width: 120, Height: 25)
+'          テキスト: "キャンセル"
+'
+' ================================================
+
+' コード（UserFormSlideSelector のコードウィンドウに貼り付け）:
+'
+' Private Sub UserForm_Initialize()
+'     Dim i As Integer
+'     Dim objSlide As Object
+'     Dim listItem As String
+'     
+'     lstSlides.Clear
+'     
+'     On Error GoTo ErrorHandler
+'     
+'     If ActivePresentation.Slides.Count = 0 Then
+'         MsgBox "スライドがありません。", vbExclamation
+'         Me.Hide
+'         Exit Sub
+'     End If
+'     
+'     For i = 1 To ActivePresentation.Slides.Count
+'         Set objSlide = ActivePresentation.Slides(i)
+'         listItem = "スライド " & i
+'         
+'         If objSlide.Shapes.HasTitle Then
+'             If objSlide.Shapes.Title.HasTextFrame Then
+'                 If Len(objSlide.Shapes.Title.TextFrame.Text) > 0 Then
+'                     listItem = listItem & " - " & objSlide.Shapes.Title.TextFrame.Text
+'                 End If
+'             End If
+'         End If
+'         
+'         lstSlides.AddItem listItem
+'     Next i
+'     
+'     lstSlides.ListIndex = 0
+'     
+'     Exit Sub
+' ErrorHandler:
+'     MsgBox "初期化中にエラーが発生しました。"
+'     Me.Hide
+' End Sub
+'
+' Private Sub cmdJump_Click()
+'     Dim slideNumber As Integer
+'     
+'     If lstSlides.ListIndex = -1 Then
+'         MsgBox "スライドを選択してください。"
+'         Exit Sub
+'     End If
+'     
+'     slideNumber = lstSlides.ListIndex + 1
+'     Me.Hide
+'     
+'     Module1.JumpToSlide slideNumber
+'     Unload Me
+' End Sub
+'
+' Private Sub cmdCancel_Click()
+'     Unload Me
+' End Sub
+'
+' Private Sub lstSlides_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+'     Cancel = True
+'     cmdJump_Click
+' End Sub
